@@ -69,11 +69,20 @@ def chatbot(input_text, embeddings, texts):
 
 previous_url = None
 
-def chat_interface(url, tags, question, save=False, clear=False):
+def chat_interface(url, tags, question, save=False, clear=False, reset=False):
     global embeddings, cleaned_texts, previous_url, saved_embeddings
 
+    # Reset the embeddings if the checkbox is selected
+    if reset:
+        embeddings = None
+        cleaned_texts = None
+
     # Clear embeddings and cleaned texts if requested or if a new URL is entered
-    if clear or (embeddings is not None and cleaned_texts is not None and url != previous_url):
+    if clear or reset or (embeddings is not None and cleaned_texts is not None and url != previous_url):
+        embeddings = None
+        cleaned_texts = None
+    
+    if reset:
         embeddings = None
         cleaned_texts = None
 
@@ -121,11 +130,13 @@ tags_input = gr.inputs.Textbox(label="HTML Tags (comma-separated)")
 question_input = gr.inputs.Textbox(label="Question")
 save_input = gr.inputs.Checkbox(label="Save embeddings")
 output_text = gr.outputs.Textbox(label="Answer")
+reset_input = gr.inputs.Checkbox(label="Reset Embeddings")
+
 
 # Create the chat interface
 chat_interface = gr.Interface(
     fn=chat_interface,
-    inputs=[url_input, tags_input, question_input, save_input],
+    inputs=[url_input, tags_input, question_input, save_input, reset_input],
     outputs=output_text,
     title="Chatbot",
     description="Ask any question based on a webpage",
@@ -133,5 +144,5 @@ chat_interface = gr.Interface(
 )
 
 if __name__ == '__main__':
-    chat_interface.launch()
+   chat_interface.launch()
     
