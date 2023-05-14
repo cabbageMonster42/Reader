@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import gradio as gr
 import numpy as np
 from bs4 import BeautifulSoup
@@ -17,8 +18,13 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 embeddings = None
 cleaned_texts = None
 
-# Global dictionary to store saved embeddings
-saved_embeddings = {}
+# SQLite database setup
+conn = sqlite3.connect('embeddings.db')
+c = conn.cursor()
+
+# Create table if it doesn't exist
+c.execute('''CREATE TABLE IF NOT EXISTS embeddings
+             (url TEXT PRIMARY KEY, tags TEXT, embeddings BLOB, cleaned_texts BLOB)''')
 
 def get_content(url, tags):
     response = requests.get(url)
@@ -43,11 +49,32 @@ def get_embedding(texts, model="text-embedding-ada-002"):
     embeddings = {i: entry['embedding'] for i, entry in enumerate(response['data'])}
     return embeddings, cleaned_texts_local
 
-
-
+def get_embeddings_db(url, tags):
+    tags_str = ','.join(tags)
+    conn = sqlite3.connect('embeddings.db')  # Create a new connection here
+    c = conn.cursor()
+    c.execute("SELECT embeddings, cleaned_texts FROM embeddings WHERE url=? AND tags=?", (url, tags_str))
+    result = c.fetchone()
+    conn.close()  # Close the connection here
+    if result is not None:
+        embeddings, cleaned_texts = pickle.loads(result[0]), pickle.loads(result[1])
+        return embeddings, cleaned_texts
+    else:
+        content = get_content(url, tags)
+        if not content:
+            return None, None
+        cleaned_texts = [text.replace("\n", " ") for text in content if text.strip()]
+        if not cleaned_texts:
+            return None, None
+        embeddings, cleaned_texts = get_embedding(cleaned_texts)
+        return embeddings, cleaned_texts
+    
 def find_similar_embeddings(query, embeddings):
+    if embeddings is None:
+        print("Error: Embeddings are not available")
+        return []
     query_embedding = get_embedding([query])[0][0]
-    similarities = [(i, np.dot(np.array(query_embedding), np.array(doc_embedding))) for i, doc_embedding in embeddings[0].items()]
+    similarities = [(i, np.dot(np.array(query_embedding), np.array(doc_embedding))) for i, doc_embedding in embeddings.items()]
 
     similarities.sort(key=lambda x: x[1], reverse=True)
     return [i for i, similarity in similarities[:5]]  # return the indexes of the top 5 most similar documents
@@ -67,65 +94,51 @@ def chatbot(input_text, embeddings, texts):
     )
     return response.choices[0].text.strip()
 
-previous_url = None
+def chat_interface(url, tags, question, clear=False):
+    global embeddings, cleaned_texts, c, conn
 
-def chat_interface(url, tags, question, save=False, clear=False):
-    global embeddings, cleaned_texts, previous_url, saved_embeddings
+    try:
+        conn = sqlite3.connect('embeddings.db')
+        c = conn.cursor()
+        tags_str = ','.join(tags)
+        
+        # Clear existing entries if required
+        if clear:
+            c.execute("DELETE FROM embeddings WHERE url=? AND tags=?", (url, tags_str))
+            conn.commit()
 
-    # Clear embeddings and cleaned texts if requested or if a new URL is entered
-    if clear or (embeddings is not None and cleaned_texts is not None and url != previous_url):
-        embeddings = None
-        cleaned_texts = None
+        # Try to retrieve embeddings and cleaned_texts from the database
+        embeddings, cleaned_texts = get_embeddings_db(url, tags)
 
-    # Check if the URL's embeddings are saved and load them
-    if url in saved_embeddings and not clear:
-        embeddings, cleaned_texts = saved_embeddings[url]
-    else:
-        # Get and clean content if embeddings are not available or the URL has changed
-        if embeddings is None or cleaned_texts is None or url != previous_url:
-            content = get_content(url, tags)
-            if not content:
-                return "Error: No content found"
+        if embeddings is None or cleaned_texts is None:
+            return "Error: Failed to generate embeddings"
 
-            cleaned_texts = [text.replace("\n", " ") for text in content if text.strip()]
-            if not cleaned_texts:
-                return "Error: No valid text content found"
+        # Store the embeddings and cleaned_texts in the database
+        c.execute("INSERT INTO embeddings VALUES (?, ?, ?, ?)", (url, tags_str, pickle.dumps(embeddings), pickle.dumps(cleaned_texts)))
+        conn.commit()
 
-            embedding_result = get_embedding(cleaned_texts)
-            if embedding_result is None:
-                return "Error: Failed to generate embeddings"
-            embeddings = embedding_result
-            
-        print("Generating embedding: ... \n..........\n...........")
-        print("Cleaned Texts:", cleaned_texts)
-        print("Cleaned Tags:\n ++++++++++++\n +++++++++++++", tags)
+        # Generate a chatbot response
+        answer = chatbot(question, embeddings, cleaned_texts)
 
-    # Save the embeddings if the save checkbox is ticked
-    if save:
-        saved_embeddings[url] = (embeddings, cleaned_texts)
-        # Optionally, save the dictionary to a file so it persists across sessions
-        with open('saved_embeddings.pkl', 'wb') as f:
-            pickle.dump(saved_embeddings, f)
-
-    # Chat with the assistant
-    answer = chatbot(question, embeddings, cleaned_texts)
-
-    # Store the previous URL for comparison
-    previous_url = url
+    except Exception as e:
+        # Handle any unexpected exceptions
+        answer = f"Error: {str(e)}"
+    finally:
+        # Always ensure the database connection is closed, even if an error occurs
+        if conn:
+            conn.close()  
 
     return answer
-
 # Set up the input and output interfaces
 url_input = gr.inputs.Textbox(label="URL")
 tags_input = gr.inputs.Textbox(label="HTML Tags (comma-separated)")
 question_input = gr.inputs.Textbox(label="Question")
-save_input = gr.inputs.Checkbox(label="Save embeddings")
 output_text = gr.outputs.Textbox(label="Answer")
 
 # Create the chat interface
 chat_interface = gr.Interface(
     fn=chat_interface,
-    inputs=[url_input, tags_input, question_input, save_input],
+    inputs=[url_input, tags_input, question_input],
     outputs=output_text,
     title="Chatbot",
     description="Ask any question based on a webpage",
