@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 import requests
 from dotenv import load_dotenv
 import openai
+import pickle
 
 # Load environment variables
 load_dotenv()
@@ -15,6 +16,9 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 # Global variables for embeddings and cleaned texts
 embeddings = None
 cleaned_texts = None
+
+# Global dictionary to store saved embeddings
+saved_embeddings = {}
 
 def get_content(url, tags):
     response = requests.get(url)
@@ -65,32 +69,39 @@ def chatbot(input_text, embeddings, texts):
 
 previous_url = None
 
-def chat_interface(url, tags, question, clear=False):
-    global embeddings, cleaned_texts, previous_url
+def chat_interface(url, tags, question, save=False, clear=False):
+    global embeddings, cleaned_texts, previous_url, saved_embeddings
 
     # Clear embeddings and cleaned texts if requested or if a new URL is entered
     if clear or (embeddings is not None and cleaned_texts is not None and url != previous_url):
         embeddings = None
         cleaned_texts = None
 
-    # Get and clean content if embeddings are not available or the URL has changed
-    if embeddings is None or cleaned_texts is None or url != previous_url:
-        content = get_content(url, tags)
-        if not content:
-            return "Error: No content found"
+    # Check if the URL's embeddings are saved and load them
+    if url in saved_embeddings and not clear:
+        embeddings, cleaned_texts = saved_embeddings[url]
+    else:
+        # Get and clean content if embeddings are not available or the URL has changed
+        if embeddings is None or cleaned_texts is None or url != previous_url:
+            content = get_content(url, tags)
+            if not content:
+                return "Error: No content found"
 
-        cleaned_texts = [text.replace("\n", " ") for text in content if text.strip()]
-        if not cleaned_texts:
-            return "Error: No valid text content found"
+            cleaned_texts = [text.replace("\n", " ") for text in content if text.strip()]
+            if not cleaned_texts:
+                return "Error: No valid text content found"
 
-        embedding_result = get_embedding(cleaned_texts)
-        if embedding_result is None:
-            return "Error: Failed to generate embeddings"
-        embeddings = embedding_result
-        
-        print("Generating embedding: ...")
-        print("Cleaned Texts:", cleaned_texts)
-        print("Cleaned Tags:", tags)
+            embedding_result = get_embedding(cleaned_texts)
+            if embedding_result is None:
+                return "Error: Failed to generate embeddings"
+            embeddings = embedding_result
+
+    # Save the embeddings if the save checkbox is ticked
+    if save:
+        saved_embeddings[url] = (embeddings, cleaned_texts)
+        # Optionally, save the dictionary to a file so it persists across sessions
+        with open('saved_embeddings.pkl', 'wb') as f:
+            pickle.dump(saved_embeddings, f)
 
     # Chat with the assistant
     answer = chatbot(question, embeddings, cleaned_texts)
@@ -104,12 +115,13 @@ def chat_interface(url, tags, question, clear=False):
 url_input = gr.inputs.Textbox(label="URL")
 tags_input = gr.inputs.Textbox(label="HTML Tags (comma-separated)")
 question_input = gr.inputs.Textbox(label="Question")
+save_input = gr.inputs.Checkbox(label="Save embeddings")
 output_text = gr.outputs.Textbox(label="Answer")
 
 # Create the chat interface
 chat_interface = gr.Interface(
     fn=chat_interface,
-    inputs=[url_input, tags_input, question_input],
+    inputs=[url_input, tags_input, question_input, save_input],
     outputs=output_text,
     title="Chatbot",
     description="Ask any question based on a webpage",
@@ -118,3 +130,4 @@ chat_interface = gr.Interface(
 
 if __name__ == '__main__':
     chat_interface.launch()
+    
