@@ -96,9 +96,9 @@ def chat_interface(url, tags, question, save=False, clear=False):
                 return "Error: Failed to generate embeddings"
             embeddings = embedding_result
             
-        print("Generating embedding: ... \n..........\n...........")
+        print("Generating embedding: ... \n...\n...")
         print("Cleaned Texts:", cleaned_texts)
-        print("Cleaned Tags:\n ++++++++++++\n +++++++++++++", tags)
+        print("Cleaned Tags:\n +++\n +++\n", tags)
 
     # Save the embeddings if the save checkbox is ticked
     if save:
