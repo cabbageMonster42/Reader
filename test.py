@@ -90,7 +90,7 @@ def chat_interface(url, tags, question, clear=False):
         
         print("Generating embedding: ...")
         print("Cleaned Texts:", cleaned_texts)
-        
+        print("Cleaned Tags:", tags)
 
     # Chat with the assistant
     answer = chatbot(question, embeddings, cleaned_texts)
@@ -118,7 +118,6 @@ chat_interface = gr.Interface(
 
 if __name__ == '__main__':
     chat_interface.launch()
-
 # working but EXPENSIVE >>>>>>>>>>>>>>>
 
 
