@@ -6,9 +6,14 @@ import requests
 from dotenv import load_dotenv
 import openai
 import pickle
+from tiktoken import tokenizer
+
 
 # Load environment variables
 load_dotenv()
+# Read the content of your Python script
+with open('test.py', 'r') as f:
+    script_content = f.read()
 
 # Set your OpenAI API key
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -52,20 +57,41 @@ def find_similar_embeddings(query, embeddings):
     similarities.sort(key=lambda x: x[1], reverse=True)
     return [i for i, similarity in similarities[:5]]  # return the indexes of the top 5 most similar documents
 
+
+
 def chatbot(input_text, embeddings, texts):
+
     similar_docs_indexes = find_similar_embeddings(input_text, embeddings)
+    with open('readme.md', 'r') as file:
+        content = file.read().strip()
+
+    content_tokens = tokenizer.count_tokens(content)
+    if content_tokens > 1000:
+        # If the content has more than 1000 tokens, truncate it
+        content = tokenizer.truncate_tokens(content, 1000)
+
     context = "\n".join(texts[i] for i in similar_docs_indexes)
     input_text = input_text + "\n"
-    prompt = f"Your task is to read the context (which is content from a website, so you should avoid words like 'facebook ' or cookies or other useless buttons. You will only answer if the question is about the context. Here is some context:\n{context}\nUser: {input_text}, "
-    response = openai.Completion.create(
-        model="text-davinci-002",
-        prompt=prompt,
-        max_tokens=500,
-        temperature=0.7,
-        n=1,
-        stop=None
-    )
-    return response.choices[0].text.strip()
+    prompt = f"""Your task is to read the context. You are a skilled software developer. This is the app you are working on: {content} You will compose an answer in the following structure: \n 'Problem:<<10-20 words.>> \n Process:<<30-50 words or a list of bulletpoints.>> \n Implementation:<<This part must be elaborate and well a definded step by step guide: Describe how to implement, make a list of dependencies, decide architecture, create a filesystem structure etc.>> \n Final thougths:<< >>' Here is some context:\n{context}\nUser: {input_text}, """
+
+    try:
+        response = openai.Completion.create(
+            model="text-davinci-003",
+            prompt=prompt,
+            max_tokens=1500,
+            temperature=0.7,
+            n=1,
+            stop=None
+        )
+    except Exception as e:
+        print(f"Failed to call OpenAI API: {e}")
+        return None
+
+    if response and response.choices and response.choices[0].text.strip():
+        return response.choices[0].text.strip()
+
+    print("No valid response from the OpenAI API.")
+    return None
 
 previous_url = None
 
