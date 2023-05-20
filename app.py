@@ -1,148 +1,119 @@
-import os
 import gradio as gr
-import numpy as np
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+# from transformers import GPTNeoForCausalLM, GPT2Tokenizer
+import torch
 from bs4 import BeautifulSoup
 import requests
-from dotenv import load_dotenv
-import openai
-import pickle
+import re
 
-# Load environment variables
-load_dotenv()
+# Initialize the model and tokenizer
 
-# Set your OpenAI API key
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# tokenizer = GPT3Tokenizer.from_pretrained("gpt3")
+# model = GPT3LMHeadModel.from_pretrained("gpt3")
+model_name = "gpt2"  
+tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+model = GPT2LMHeadModel.from_pretrained("gpt2")
+# model_name = "EleutherAI/gpt-neo-2.7B"  # Replace this with the desired GPT-Neo model name
+# tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+# model = GPTNeoForCausalLM.from_pretrained(model_name)
 
-# Global variables for embeddings and cleaned texts
-embeddings = None
-cleaned_texts = None
 
-# Global dictionary to store saved embeddings
-saved_embeddings = {}
 
-def get_content(url, tags):
+# HTML Scraping function
+def scrap_url(url):
+    # Scrap the HTML content from the URL
     response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    content = []
-    for tag in tags:
-        elements = soup.find_all(tag)
-        for element in elements:
-            text = ' '.join(element.stripped_strings)
-            content.append(text)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    paragraphs = soup.find_all('p')
+    content = ''
+    for paragraph in paragraphs:
+        content += paragraph.text
+    content = re.sub(r'\s+', ' ', content)
     return content
 
-def get_embedding(texts, model="text-embedding-ada-002"):
-    cleaned_texts_local = [text.replace("\n", " ") for text in texts if text.strip()]
-    try:
-        response = openai.Embedding.create(input=cleaned_texts_local, model=model)
-    except openai.error.InvalidRequestError as e:
-        invalid_input = e.args[0].split(" - ")[0]
-        print(f"Invalid input: {invalid_input}")
-        return None
-    embeddings = {i: entry['embedding'] for i, entry in enumerate(response['data'])}
-    return embeddings, cleaned_texts_local
+# Function to generate GPT-3 embeddings
+def create_embeddings(prompt):
+    inputs = tokenizer(prompt, return_tensors="pt")
+    with torch.no_grad():
+        outputs = model(**inputs, output_hidden_states=True)
+    last_hidden_states = outputs.hidden_states[-1]  # Get the last hidden state
+    return last_hidden_states
 
+# Function to generate GPT-3 response
+def ask_gpt2(prompt):
+    input_ids = tokenizer.encode(prompt, return_tensors='pt')
+    gen_tokens = model.generate(input_ids, do_sample=True, temperature=0.7, max_length=1000)
+    gen_text = tokenizer.decode(gen_tokens[:, input_ids.shape[-1]:][0], clean_up_tokenization_spaces=True)
+    return gen_text
 
-
-def find_similar_embeddings(query, embeddings):
-    query_embedding = get_embedding([query])[0][0]
-    similarities = [(i, np.dot(np.array(query_embedding), np.array(doc_embedding))) for i, doc_embedding in embeddings[0].items()]
-
-    similarities.sort(key=lambda x: x[1], reverse=True)
-    return [i for i, similarity in similarities[:5]]  # return the indexes of the top 5 most similar documents
-
-def chatbot(input_text, embeddings, texts):
-    similar_docs_indexes = find_similar_embeddings(input_text, embeddings)
-    context = "\n".join(texts[i] for i in similar_docs_indexes)
-    input_text = input_text + "\n"
-    prompt = f"Your task is to read the context (which is content from a website, so you should avoid words like 'facebook ' or cookies or other useless buttons. You will only answer if the question is about the context. Here is some context:\n{context}\nUser: {input_text}, "
-    response = openai.Completion.create(
-        model="text-davinci-002",
-        prompt=prompt,
-        max_tokens=500,
-        temperature=0.7,
-        n=1,
-        stop=None
-    )
-    return response.choices[0].text.strip()
-
-previous_url = None
-
-def chat_interface(url, tags, question, save=False, clear=False, reset=False):
-    global embeddings, cleaned_texts, previous_url, saved_embeddings
-
-    # Reset the embeddings if the checkbox is selected
-    if reset:
-        embeddings = None
-        cleaned_texts = None
-
-    # Clear embeddings and cleaned texts if requested or if a new URL is entered
-    if clear or reset or (embeddings is not None and cleaned_texts is not None and url != previous_url):
-        embeddings = None
-        cleaned_texts = None
-    
-    if reset:
-        embeddings = None
-        cleaned_texts = None
-
-    # Check if the URL's embeddings are saved and load them
-    if url in saved_embeddings and not clear:
-        embeddings, cleaned_texts = saved_embeddings[url]
+# Handle extra UI inputs
+def handle_extra_ui(inputs):
+    if 'extra_ui' in inputs and inputs['extra_ui'] is not None:
+        # Add the extra UI inputs to the prompt
+        prompt = f' User uploaded: {inputs["extra_ui"].name}'
     else:
-        # Get and clean content if embeddings are not available or the URL has changed
-        if embeddings is None or cleaned_texts is None or url != previous_url:
-            content = get_content(url, tags)
-            if not content:
-                return "Error: No content found"
+        prompt = ""
+    return prompt
 
-            cleaned_texts = [text.replace("\n", " ") for text in content if text.strip()]
-            if not cleaned_texts:
-                return "Error: No valid text content found"
+# Handle Scrap inputs
+def handle_scrap(inputs):
+    if 'scrap_on' in inputs and inputs['scrap_on']:
+        # Scrap the URL and add it to the next question
+        url = inputs['url']
+        scrapped_text = scrap_url(url)
+        return f' URL Content: {scrapped_text}'
+    else:
+        return ""
 
-            embedding_result = get_embedding(cleaned_texts)
-            if embedding_result is None:
-                return "Error: Failed to generate embeddings"
-            embeddings = embedding_result
-            
-        print("Generating embedding: ... \n...\n...")
-        print("Cleaned Texts:", cleaned_texts)
-        print("Cleaned Tags:\n +++\n +++\n", tags)
+# Main inference function
+def infer(user_input, scrap_on, url, extra_ui, chat_history):
+    # Handle the extra UI and Scrap inputs
+    extra_ui_prompt = handle_extra_ui({"extra_ui": extra_ui})
+    scrap_prompt = handle_scrap({"scrap_on": scrap_on, "url": url})
 
-    # Save the embeddings if the save checkbox is ticked
-    if save:
-        saved_embeddings[url] = (embeddings, cleaned_texts)
-        # Optionally, save the dictionary to a file so it persists across sessions
-        with open('saved_embeddings.pkl', 'wb') as f:
-            pickle.dump(saved_embeddings, f)
+    # Add the prompts to the user input
+    user_input += extra_ui_prompt + scrap_prompt
 
-    # Chat with the assistant
-    answer = chatbot(question, embeddings, cleaned_texts)
+    # Generate the GPT-3 response
+    response = ask_gpt2(user_input)
 
-    # Store the previous URL for comparison
-    previous_url = url
+    # Update the chat history
+    chat_history = chat_history + f"\nUser----:\n {user_input}\nAI----:\n {response}"
 
-    return answer
+    # Clear the user input field
+    user_input = ""
 
-# Set up the input and output interfaces
-url_input = gr.inputs.Textbox(label="URL")
-tags_input = gr.inputs.Textbox(label="HTML Tags (comma-separated)")
-question_input = gr.inputs.Textbox(label="Question")
-save_input = gr.inputs.Checkbox(label="Save embeddings")
-output_text = gr.outputs.Textbox(label="Answer")
-reset_input = gr.inputs.Checkbox(label="Reset Embeddings")
+    return user_input, chat_history
 
+# In the above example, the `infer` function takes four arguments:
 
-# Create the chat interface
-chat_interface = gr.Interface(
-    fn=chat_interface,
-    inputs=[url_input, tags_input, question_input, save_input, reset_input],
-    outputs=output_text,
-    title="Chatbot",
-    description="Ask any question based on a webpage",
-    theme="compact"
+# - `user_input`: This is the user's chat input.
+# - `scrap_on`: This is the boolean flag that determines whether or not to scrap a webpage.
+# - `url`: This is the URL to scrap if `scrap_on` is true.
+# - `extra_ui`: This is the file that the user uploaded.
+# - `chat_history`: This is the current chat history.
+
+# The function first handles any extra UI inputs and scrapping, if necessary, and adds the results to the user input. Then it generates a response from the GPT-3 model, updates the chat history, and clears the user input.
+
+# Note that the `infer` function should return all of the values that you want to update on the Gradio interface. In this case, we're updating the user input (clearing it), and chat history. The order of the return values should match the order of the output fields in the Gradio interface.
+
+# Here is how you can create the Gradio interface with the `infer` function:
+
+# Create the Gradio interface
+iface = gr.Interface(
+    fn=infer, 
+    inputs=[
+        gr.inputs.Textbox(lines=2, placeholder='Type something here...'), 
+        gr.inputs.Checkbox(label='Scrap URL'),
+        gr.inputs.Textbox(default='', placeholder='Enter URL here'),
+        gr.inputs.File(label='Upload a file'),
+        gr.inputs.Textbox(lines=20, default='', label='Chat History'),
+    ], 
+    outputs=[
+        gr.outputs.Textbox(label='User Input'), 
+        gr.outputs.Textbox(label='Chat History'),
+    ]
 )
 
-if __name__ == '__main__':
-   chat_interface.launch()
-    
+
+iface.launch()
